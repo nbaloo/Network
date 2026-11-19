@@ -1,0 +1,94 @@
+$MacAddress = "24-6A-0E-2C-DA-A7"
+$TargetIP = "172.27.16.253"
+$SubnetMask = "255.255.252.0" 
+
+$Port       = 9
+
+#Calcul du broadcast
+$ipBytes   = [IPAddress]::Parse($TargetIP).GetAddressBytes()
+$maskBytes = [IPAddress]::Parse($SubnetMask).GetAddressBytes()
+
+$broadcastBytes = for ($i = 0; $i -lt 4; $i++) {
+    $ipBytes[$i] -bor ((-bnot $maskBytes[$i]) -band 0xFF)
+}
+
+$Broadcast = ([IPAddress]::new([byte[]]$broadcastBytes)).ToString()
+
+Write-Host "Broadcast calculé : $Broadcast"
+
+
+$CleanMac = $MacAddress -replace '[^0-9A-Fa-f]', ''
+
+if ($CleanMac.Length -ne 12) {
+    Write-Error "Adresse MAC invalide : $MacAddress"
+    return
+}
+
+try {
+    $BroadcastIP = [System.Net.IPAddress]::Parse($Broadcast)
+}
+catch {
+    Write-Error "Adresse broadcast invalide : $Broadcast"
+    return
+}
+
+[byte[]]$MacBytes = for ($i = 0; $i -lt 12; $i += 2) {
+    [Convert]::ToByte(
+        $CleanMac.Substring($i, 2),
+        16
+    )
+}
+
+# Magic Packet :
+# 6 octets FF + adresse MAC répétée 16 fois
+[byte[]]$MagicPacket = New-Object byte[] 102
+
+for ($i = 0; $i -lt 6; $i++) {
+    $MagicPacket[$i] = 0xFF
+}
+
+for ($i = 0; $i -lt 16; $i++) {
+    [Array]::Copy(
+        $MacBytes,
+        0,
+        $MagicPacket,
+        6 + ($i * 6),
+        6
+    )
+}
+
+$UdpClient = [System.Net.Sockets.UdpClient]::new()
+
+try {
+    $UdpClient.EnableBroadcast = $true
+
+    $Endpoint = [System.Net.IPEndPoint]::new(
+        $BroadcastIP,
+        $Port
+    )
+
+    for ($i = 1; $i -le 3; $i++) {
+        [void]$UdpClient.Send(
+            $MagicPacket,
+            $MagicPacket.Length,
+            $Endpoint
+        )
+
+        Write-Host "Paquet WOL $i/3 envoyé"
+        Start-Sleep -Milliseconds 500
+    }
+
+    Write-Host ""
+    Write-Host (
+        "Magic Packet envoyé - MAC {0} - Broadcast {1}:{2}" -f `
+        $MacAddress,
+        $Broadcast,
+        $Port
+    )
+}
+catch {
+    Write-Error "Échec de l'envoi WOL : $($_.Exception.Message)"
+}
+finally {
+    $UdpClient.Dispose()
+}
